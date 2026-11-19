@@ -1,10 +1,7 @@
 // This adapter is for the pinned v208 PE32 image only. A candidate packager
 // must verify the complete original image digest and opcode registration.
 #include "monster_tuning.h"
-
-#if !defined(_MSC_VER) || !defined(_M_IX86)
-#error The v208 START_MAP adapter requires MSVC x86.
-#endif
+#include "v208_dungeon_monster.h"
 
 // The additive payload uses no CRT. MSVC emits this marker for binary64 data.
 #ifdef MONSTER_TUNING_NO_CRT
@@ -13,12 +10,7 @@ extern "C" { int _fltused = 0; }
 
 namespace {
 
-constexpr std::uintptr_t kPacketCursor = 0x057f9ad0;
-constexpr std::uintptr_t kPacketRemaining = 0x057f9ad4;
 monster_tuning::RoomRules roomRules;
-
-using ReadHealth = void (__thiscall*)(const void*, const void*, std::int64_t*);
-using WriteHealth = void (__thiscall*)(void*, const std::int64_t*, void*);
 
 std::int64_t TruncateToInt64(double scaled) noexcept {
     // The payload links without the MSVC runtime. Preserve the client's x87
@@ -39,7 +31,6 @@ std::int64_t TruncateToInt64(double scaled) noexcept {
     return result;
 }
 
-
 std::int64_t ScalePositiveHealth(std::int64_t health, double multiplier) noexcept {
     const double scaled = static_cast<double>(health) * multiplier;
     if (scaled >= 9223372036854775808.0) {
@@ -52,29 +43,11 @@ std::int64_t ScalePositiveHealth(std::int64_t health, double multiplier) noexcep
     return TruncateToInt64(scaled);
 }
 
-using ScalarReader = void (__thiscall*)(const void*, const void*, std::int32_t*);
-using ScalarWriter = void (__thiscall*)(void*, const std::int32_t*, void*);
-
-unsigned ScalarCodec(void* field) noexcept {
-    const auto alignment = reinterpret_cast<std::uintptr_t>(field) & 15;
-    return alignment % 4 == 0 ? alignment / 4 : 4;
-}
-
-std::int32_t ReadMonsterScalar(void* field) noexcept {
-    constexpr std::uintptr_t readers[] = {
-        0x037df550, 0x037df5c0, 0x037df630, 0x037df6a0, 0x037df7f0,
-    };
-    std::int32_t value = 0;
-    reinterpret_cast<ScalarReader>(readers[ScalarCodec(field)])(
-        field, static_cast<std::uint8_t*>(field) + 4, &value);
-    return value;
-}
-
-void ScaleMonsterScalar(void* field, double rate) noexcept {
+void ScaleMonsterScalar(std::uint8_t* field, double rate) noexcept {
     if (rate == 1.0) {
         return;
     }
-    const auto value = ReadMonsterScalar(field);
+    const auto value = v208::ReadScalar(field);
     const auto scaled = value * rate;
     constexpr auto maxValue = (std::numeric_limits<std::int32_t>::max)();
     constexpr auto minValue = (std::numeric_limits<std::int32_t>::min)();
@@ -83,18 +56,13 @@ void ScaleMonsterScalar(void* field, double rate) noexcept {
     if (result == value) {
         return;
     }
-    constexpr std::uintptr_t writers[] = {
-        0x037df130, 0x037df1b0, 0x037df230, 0x037df2b0, 0x037df010,
-    };
-    reinterpret_cast<ScalarWriter>(writers[ScalarCodec(field)])(
-        field, &result, static_cast<std::uint8_t*>(field) + 4);
+    v208::WriteScalar(field, result);
 }
 }  // namespace
 
 extern "C" __declspec(noinline) void __cdecl PrepareMonsterTuningStartMap() noexcept {
-    const auto cursor = *reinterpret_cast<const std::uint8_t* const*>(kPacketCursor);
-    auto& remaining = *reinterpret_cast<std::int32_t*>(kPacketRemaining);
-    monster_tuning::PrepareStartMap(roomRules, cursor, remaining);
+    const auto packet = v208::ActivePacketReader();
+    monster_tuning::PrepareStartMap(roomRules, packet.cursor, packet.remaining);
 }
 
 extern "C" __declspec(dllexport) void __cdecl
@@ -102,21 +70,17 @@ CopyMonsterTuningRatesV208(std::uint8_t level, monster_tuning::Multipliers* rate
     *rates = roomRules.ForLevel(level);
 }
 
-static void ScaleMonsterHealthField(void* field, double multiplier) noexcept {
+static void ScaleMonsterHealthField(std::uint8_t* field, double multiplier) noexcept {
     if (multiplier == 1.0) {
         return;
     }
-    auto* encoded = static_cast<std::uint8_t*>(field) + 8;
-    const auto readHealth = reinterpret_cast<ReadHealth>(0x037df870);
-    const auto writeHealth = reinterpret_cast<WriteHealth>(0x037df090);
-    std::int64_t health = 0;
-    readHealth(field, encoded, &health);
+    const auto health = v208::ReadHealth(field);
     if (health <= 0) {
         return;
     }
     const auto scaled = ScalePositiveHealth(health, multiplier);
     if (scaled != health) {
-        writeHealth(field, &scaled, encoded);
+        v208::WriteHealth(field, scaled);
     }
 }
 
@@ -133,34 +97,28 @@ extern "C" __declspec(dllexport) __declspec(naked) void MonsterTuningStartMapV20
 }
 
 extern "C" __declspec(noinline) void __cdecl ApplyMonsterSpawnTuning(void* actor) noexcept {
-    auto* object = static_cast<std::uint8_t*>(actor);
-    const auto* table = *reinterpret_cast<const std::uintptr_t* const*>(object);
-    // These three native accessors establish the kind, stat layout and HP layout.
-    if (table[0x50 / 4] != 0x02677900 || table[0x670 / 4] != 0x026d13c0 ||
-        table[0x694 / 4] != 0x026d13f0 ||
-        *reinterpret_cast<const std::uint32_t*>(object + 0xa8) != 0x211) {
+    const v208::MonsterView monster(actor);
+    if (!monster.HasSupportedLayout()) {
         return;
     }
-    const auto level = ReadMonsterScalar(object + 0x10d0);
+    const auto level = monster.Level();
     if (level < 0 || level > 255) {
         return;
     }
     const auto rates = roomRules.ForLevel(static_cast<std::uint8_t>(level));
-    for (unsigned block = 0; block < 4; ++block) {
-        auto* attributes = object + 0x10d0 + block * 0x740;
-        ScaleMonsterHealthField(attributes + 8, rates.hp);
-        ScaleMonsterScalar(attributes + 0x2a0, rates.moveSpeed);
-        ScaleMonsterScalar(attributes + 0x2b0, rates.attackSpeed);
-        // Native attack and defense calculations read the equipment stat bases
-        // for physical and magical damage independently.
-        ScaleMonsterScalar(attributes + 0x338, rates.attack);
-        ScaleMonsterScalar(attributes + 0x348, rates.defense);
-        ScaleMonsterScalar(attributes + 0x358, rates.attack);
-        ScaleMonsterScalar(attributes + 0x368, rates.defense);
+    using v208::MonsterScalar;
+    for (unsigned block = 0; block < v208::MonsterView::AttributeBlockCount; ++block) {
+        ScaleMonsterHealthField(monster.MaximumHealth(block), rates.hp);
+        ScaleMonsterScalar(monster.Scalar(block, MonsterScalar::MoveSpeed), rates.moveSpeed);
+        ScaleMonsterScalar(monster.Scalar(block, MonsterScalar::AttackSpeed), rates.attackSpeed);
+        ScaleMonsterScalar(monster.Scalar(block, MonsterScalar::PhysicalAttack), rates.attack);
+        ScaleMonsterScalar(monster.Scalar(block, MonsterScalar::PhysicalDefense), rates.defense);
+        ScaleMonsterScalar(monster.Scalar(block, MonsterScalar::MagicalAttack), rates.attack);
+        ScaleMonsterScalar(monster.Scalar(block, MonsterScalar::MagicalDefense), rates.defense);
     }
-    ScaleMonsterHealthField(object + 0x2dd0, rates.hp);
+    ScaleMonsterHealthField(monster.CurrentHealth(), rates.hp);
     if (rates.aggression != 1.0) {
-        auto& warlike = *reinterpret_cast<std::int32_t*>(object + 0x41d8);
+        auto& warlike = monster.Aggression();
         const auto scaled = warlike * rates.aggression;
         warlike = scaled >= 100.0 ? 100 : scaled <= 0.0 ? 0 : static_cast<std::int32_t>(TruncateToInt64(scaled));
     }

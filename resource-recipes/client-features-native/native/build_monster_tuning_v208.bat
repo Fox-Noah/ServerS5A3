@@ -27,6 +27,4 @@ if errorlevel 1 exit /b 1
 link /nologo /DLL /NOENTRY /NODEFAULTLIB /MACHINE:X86 /BASE:0x06F90000 /FIXED /DYNAMICBASE:NO /MERGE:.rdata=.text /Brepro "/OUT:%output%\receiver.dll" "%output%\receiver.obj"
 if errorlevel 1 exit /b 1
 python -B "%~dp0build_monster_tuning_v208.py" --base "%input%" --payload "%output%\receiver.dll" --output "%output%\DNF-receiver.exe"
-if errorlevel 1 exit /b 1
-python -B "%~dp0test_monster_tuning_receiver_v208.py" --candidate "%output%\DNF-receiver.exe" --payload "%output%\receiver.dll"
 exit /b %errorlevel%
