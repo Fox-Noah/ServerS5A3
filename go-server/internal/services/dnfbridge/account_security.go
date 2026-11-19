@@ -45,6 +45,7 @@ func (a *accountAPIServer) ensureAccountSecuritySchema(ctx context.Context) erro
 		"_qq_actions (id CHAR(64) NOT NULL PRIMARY KEY, account_id VARCHAR(64) NOT NULL, qq VARCHAR(16) NOT NULL, group_id VARCHAR(16) NOT NULL, state VARCHAR(16) NOT NULL DEFAULT 'pending', attempts INT NOT NULL DEFAULT 0, cause VARCHAR(128) NOT NULL DEFAULT '', lease CHAR(32) NOT NULL DEFAULT '', next_at BIGINT NOT NULL DEFAULT 0, created_at BIGINT NOT NULL, KEY due(state,next_at), KEY by_account(account_id))",
 		"_auth_failures (subject CHAR(64) NOT NULL PRIMARY KEY, failures INT NOT NULL DEFAULT 0, blocked_until BIGINT NOT NULL DEFAULT 0, updated_at BIGINT NOT NULL)",
 		"_qq_settings (id INT NOT NULL PRIMARY KEY, enabled BOOLEAN NOT NULL DEFAULT FALSE, allow_binding BOOLEAN NOT NULL DEFAULT FALSE, groups_json TEXT NOT NULL, revision BIGINT UNSIGNED NOT NULL DEFAULT 0)",
+		"_monster_tuning (id INT NOT NULL PRIMARY KEY, rules_json MEDIUMTEXT NOT NULL, revision BIGINT UNSIGNED NOT NULL DEFAULT 0)",
 		"_qq_code_reservations (code_hash CHAR(64) NOT NULL PRIMARY KEY, account_id VARCHAR(64) NOT NULL, expires_at BIGINT NOT NULL)",
 		"_qq_codes (account_id VARCHAR(64) NOT NULL PRIMARY KEY, code_hash CHAR(64) NOT NULL, expires_at BIGINT NOT NULL, failures INT NOT NULL DEFAULT 0)",
 		"_qq_bindings (account_id VARCHAR(64) NOT NULL PRIMARY KEY, qq VARCHAR(16) NOT NULL, group_id VARCHAR(16) NOT NULL, bound_at BIGINT NOT NULL, code_hash CHAR(64) NOT NULL, UNIQUE KEY uniq_qq(qq))",
@@ -69,6 +70,9 @@ func (a *accountAPIServer) ensureAccountSecuritySchema(ctx context.Context) erro
 				return err
 			}
 		}
+	}
+	if _, err := a.db.ExecContext(ctx, "INSERT IGNORE INTO "+a.table+"_monster_tuning(id,rules_json,revision) VALUES(1,'[]',0)"); err != nil {
+		return err
 	}
 	_, err := a.db.ExecContext(ctx, "INSERT IGNORE INTO "+a.table+"_qq_settings(id,enabled,groups_json,revision) VALUES(1,FALSE,'[]',0)")
 	return err

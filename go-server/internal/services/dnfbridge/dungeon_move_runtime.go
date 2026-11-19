@@ -846,6 +846,13 @@ func buildCurrentDungeonMoveStartMapBody(
 		if err != nil {
 			return nil, fmt.Errorf("build cached target-room start-map body: %w", err)
 		}
+		if runtime.monsterTuning != nil {
+			mapID := plan.Target.Map.Map.ID
+			if mapID <= 0 || mapID > int64(^uint32(0)) {
+				return nil, fmt.Errorf("%w: map=%d", errDungeonStartMapMapIDRange, mapID)
+			}
+			body = appendMonsterTuningTrailer(body, runtime.monsterTuning, uint32(mapID))
+		}
 		return body, nil
 	}
 	if plan.PayloadMode != currentDungeonStartMapPayloadBuild &&

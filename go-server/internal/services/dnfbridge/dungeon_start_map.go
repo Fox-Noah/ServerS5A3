@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"longheng.io/server/internal/modules/dnf/monster"
 	"longheng.io/server/internal/modules/dnf/worldmap"
 )
 
@@ -75,6 +76,7 @@ type currentDungeonStartMapRidableEntry struct {
 }
 
 type currentDungeonStartMap struct {
+	monsterTuning             *monster.TuningRules
 	X                         byte
 	Y                         byte
 	LayeredRoomFlag           byte
@@ -127,6 +129,7 @@ func currentDungeonStartMapFromRuntime(
 		return currentDungeonStartMap{}, err
 	}
 	return currentDungeonStartMap{
+		monsterTuning:             runtime.monsterTuning,
 		X:                         byte(scene.Coordinate.X),
 		Y:                         byte(scene.Coordinate.Y),
 		LayeredRoomFlag:           state.LayeredRoomFlag,
@@ -210,7 +213,7 @@ func (packet currentDungeonStartMap) Build() ([]byte, error) {
 		}
 	}
 	writer.writeByte(packet.PartyMemberIndex)
-	return writer.bytes(), nil
+	return appendMonsterTuningTrailer(writer.bytes(), packet.monsterTuning, packet.MapID), nil
 }
 
 func writeCurrentDungeonStartMapRidableEntry(writer *packetWriter, entry currentDungeonStartMapRidableEntry) {

@@ -5,6 +5,7 @@ package adminapi
 import (
 	"longheng.io/server/internal/modules/dnf/activityrank"
 	"longheng.io/server/internal/modules/dnf/moderation"
+	"longheng.io/server/internal/modules/dnf/monster"
 	"longheng.io/server/internal/modules/dnf/onlineevent"
 	"longheng.io/server/internal/modules/dnf/qqbinding"
 	"longheng.io/server/internal/modules/dnf/repository"
@@ -18,6 +19,7 @@ const Path = "/api/game/admin"
 const ActionNotifyMailbox = "notify_mailbox"
 
 type Request struct {
+	MonsterTuning   *monster.TuningConfiguration       `json:"monsterTuning,omitempty"`
 	QQChange        *qqbinding.Change                  `json:"qqChange,omitempty"`
 	QQCheck         *qqbinding.CheckResult             `json:"qqCheck,omitempty"`
 	ActivityQuery   *repository.ActivityQuery          `json:"activityQuery,omitempty"`
@@ -43,6 +45,7 @@ type Request struct {
 }
 
 type Response struct {
+	MonsterTuning      *monster.TuningConfiguration              `json:"monsterTuning,omitempty"`
 	QQChecks           []qqbinding.Check                         `json:"qqChecks,omitempty"`
 	QQChanged          bool                                      `json:"qqChanged,omitempty"`
 	PasswordReset      *PasswordResetResult                      `json:"passwordReset,omitempty"`

@@ -13,6 +13,7 @@ import (
 	"longheng.io/server/internal/modules/dnf/dnfenum"
 	dnfdungeon "longheng.io/server/internal/modules/dnf/dungeon"
 	"longheng.io/server/internal/modules/dnf/dungeoncmd"
+	"longheng.io/server/internal/modules/dnf/monster"
 	"longheng.io/server/internal/modules/dnf/worldmap"
 )
 
@@ -152,6 +153,7 @@ func isNonLeaderPartyMember(state alignedcmd.PartyState, characterID uint16) boo
 }
 
 type runtimePartyDungeonEntryPlan struct {
+	monsterTuning     *monster.TuningRules
 	randomizedObjects *currentDungeonRandomizedOwner
 	dungeonID         int64
 	mazeIndex         int
@@ -1134,6 +1136,7 @@ func (s *Service) prepareRuntimePartyDungeonEntry(
 		return nil, nil
 	}
 	plan := runtimePartyDungeonEntryPlan{
+		monsterTuning:     leaderRuntime.monsterTuning,
 		randomizedObjects: leaderRuntime.randomizedObjects,
 		dungeonID:         leaderRuntime.Dungeon.ID,
 		mazeIndex:         leaderRuntime.MazeIndex,

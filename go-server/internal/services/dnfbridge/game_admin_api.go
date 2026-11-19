@@ -37,6 +37,8 @@ func (a *accountAPIServer) handleGameAdmin(w http.ResponseWriter, r *http.Reques
 	out := adminapi.Response{Version: adminapi.Version, OK: true}
 	s := a.service
 	switch req.Action {
+	case "monster_tuning", "monster_tuning_save":
+		a.handleMonsterTuningAdmin(r.Context(), req, &out)
 	case "reset_account_password":
 		var err error
 		if req.PasswordReset == nil {

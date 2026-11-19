@@ -13,6 +13,7 @@ import (
 
 	dnfdungeon "longheng.io/server/internal/modules/dnf/dungeon"
 	"longheng.io/server/internal/modules/dnf/dungeoncmd"
+	"longheng.io/server/internal/modules/dnf/monster"
 	"longheng.io/server/internal/modules/dnf/raid"
 	dnfrepo "longheng.io/server/internal/modules/dnf/repository"
 	"longheng.io/server/internal/modules/dnf/worldmap"
@@ -36,6 +37,7 @@ var (
 )
 
 type runtimeDungeonState struct {
+	monsterTuning                            *monster.TuningRules
 	ekernDiagnostic                          *ekernDiagnosticBudget
 	pendingDeathPreparations                 map[uint32]*pendingDungeonDeathPreparation
 	guildDungeonKills                        *currentGuildDungeonKillPlan
@@ -923,7 +925,15 @@ func (s *Service) prepareDungeonRuntimePlanned(
 	if err != nil {
 		return nil, worldmap.DungeonRoomScene{}, fmt.Errorf("prepare randomized dungeon objects before admission: %w", err)
 	}
+	var monsterTuning *monster.TuningRules
+	if s.monsterTuningEnabled() {
+		monsterTuning, err = s.loadDungeonMonsterTuning(ctx, partyPlan)
+		if err != nil {
+			return nil, worldmap.DungeonRoomScene{}, fmt.Errorf("load monster AI rules before admission: %w", err)
+		}
+	}
 	runtime := &runtimeDungeonState{
+		monsterTuning:            monsterTuning,
 		antonHatcheryTransfer:    antonTransfer,
 		randomizedObjects:        randomizedObjects,
 		lukeSanctumMaze:          lukeSanctumMaze,
