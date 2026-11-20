@@ -510,7 +510,7 @@ func (s *Service) commitCurrentCeraShopPurchase(
 			resolved.PremiumDurationSeconds = slot.Days * 86400
 			purchases = append(purchases, resolved)
 			continue
-		case product.Section == "charac premium package":
+		case product.Section == "charac premium package" || product.PremiumPackageDays > 0:
 			if product.PremiumPackageDays == 0 {
 				return currentCeraShopCommitResult{}, fmt.Errorf("%w: commodity=%d has no contract day count", errCurrentCeraShopProductUnavailable, product.CommodityID)
 			}

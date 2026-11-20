@@ -184,6 +184,15 @@ func parseCurrentCeraShopProductSection(
 			CeraPrice:   ceraPrice,
 			Section:     section,
 		}
+		if section == "regular package" || section == "regularpackage" {
+			// These two contract bundles can also be displayed on the daily shelf.
+			switch {
+			case commodityID == 100625 && itemID == 2682006:
+				product.PremiumPackageDays = 60
+			case commodityID == 103156 && itemID == 10007846:
+				product.PremiumPackageDays = 30
+			}
+		}
 		if normalizeMagicBoxSectionName(section) == "visual" {
 			durationDays, durationOK := currentCeraShopPVFUint32(values[offset+3])
 			if !durationOK {

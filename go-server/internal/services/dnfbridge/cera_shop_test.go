@@ -1086,7 +1086,7 @@ func TestRealPVFCeraShopCatalogResolvesObservedPackageAndAvatarCommodities(t *te
 		t.Fatalf("selectable premium product=%+v found=%t", selectablePremium, found)
 	}
 	contractPackage, found := catalog.Product(100625)
-	if !found || contractPackage.Section != "charac premium package" || contractPackage.ItemID != 2682006 || contractPackage.CeraPrice != 3880 {
+	if !found || contractPackage.PremiumPackageDays != 60 || contractPackage.ItemID != 2682006 || contractPackage.CeraPrice != 3880 {
 		t.Fatalf("contract package product=%+v found=%t", contractPackage, found)
 	}
 	t.Logf("package commodity=%d item=%d cera=%d; avatar commodity=%d item=%d duration_days=%d cera=%d", packageProduct.CommodityID, packageProduct.ItemID, packageProduct.CeraPrice, avatarProduct.CommodityID, avatarProduct.ItemID, avatarProduct.AvatarDurationDays, avatarProduct.CeraPrice)
@@ -1706,4 +1706,46 @@ func currentCeraShopTestRequestBodyWithPayment(commodityID uint32, paymentMode b
 	body[5] = attributeValue
 	binary.LittleEndian.PutUint32(body[7:11], commodityID)
 	return body
+}
+
+func TestCurrentCeraShopDailyDevilPackagesActivateWithoutDelivery(t *testing.T) {
+	const shelf = "[regular package]\n" +
+		"100625 2682006 0 0 3880 `60`" + " 0 0 -1 -1 255\n" +
+		"103156 10007846 0 0 3880 `30`" + " 0 0 -1 -1 255\n[/regular package]\n"
+	source := bridgePVFSource{"etc/cerashop.etc": shelf}
+	document, err := parseDungeonCardPVFDocument(source, "etc/cerashop.etc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog := mustCurrentCeraShopTestCatalog(t)
+	if err := parseCurrentCeraShopProductSection(document, "regular package", 11, 4, false, catalog.products); err != nil {
+		t.Fatal(err)
+	}
+	for commodity, days := range map[uint32]int64{100625: 60, 103156: 30} {
+		t.Run(strconv.FormatUint(uint64(commodity), 10), func(t *testing.T) {
+			repositories := dnfrepomemory.NewMemoryGroup()
+			ctx := context.Background()
+			seedCeraShopPremiumCharacter(t, ctx, repositories, "19", 5000)
+			service := newCeraShopPremiumTestService(repositories, catalog)
+			session := &gameSession{conn: &bufferConn{}, connID: "daily-devil-package", selectedCharacterID: 19}
+			if err := service.handleCurrentCeraShopPurchase(session, currentCeraShopTestRequestBody(commodity)); err != nil {
+				t.Fatal(err)
+			}
+			account, found, err := repositories.Account.Load(ctx, "account-1")
+			if err != nil || !found {
+				t.Fatalf("load purchased account: found=%v err=%v", found, err)
+			}
+			expire := premium.ExpireAt(account, premium.DevilSlotType(premium.DevilSlotAutoRepair))
+			if want := time.Now().Unix() + days*86400; expire < want-30 || expire > want {
+				t.Fatalf("contract expiry=%d, want ~%d", expire, want)
+			}
+			if got := loadCeraShopAccountCera(t, ctx, repositories, "account-1"); got != 1120 {
+				t.Fatalf("remaining cera=%d, want 1120", got)
+			}
+			inventory, found, err := repositories.Inventory.Load(ctx, "19")
+			if err != nil || !found || len(inventory.Slots) != 0 {
+				t.Fatalf("contract unexpectedly delivered inventory: found=%v slots=%+v err=%v", found, inventory.Slots, err)
+			}
+		})
+	}
 }
