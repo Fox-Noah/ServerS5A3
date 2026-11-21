@@ -1,0 +1,6 @@
+LIBRARY RS
+EXPORTS
+    ClearRSInfo   @1
+    ClearRSInfo2  @2
+    PutRSInfo     @3
+    PutRSInfo2    @4
