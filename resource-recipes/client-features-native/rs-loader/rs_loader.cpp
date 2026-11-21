@@ -9,6 +9,9 @@
 //
 // Nothing is loaded from DllMain (loader lock).
 
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601
+#endif
 #ifndef UNICODE
 #define UNICODE
 #endif
@@ -50,6 +53,79 @@ static void LogA(const char* fmt, ...)
     va_end(ap);
 }
 
+// Resolve an address to module file + RVA for post-mortem symbol lookup.
+static void LogAddress(const char* tag, const void* address)
+{
+    if (!address) { LogA("%s=null", tag); return; }
+    HMODULE module = NULL;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                           GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCSTR>(address), &module)) {
+        char path[MAX_PATH] = {0};
+        GetModuleFileNameA(module, path, MAX_PATH);
+        LogA("%s=%p module=%s rva=%08lX", tag, address, path,
+             (unsigned long)((const unsigned char*)address - (const unsigned char*)module));
+    } else {
+        LogA("%s=%p module=?", tag, address);
+    }
+}
+
+// Safe read: a corrupt EBP chain must not cause a second exception inside the
+// observer. Returns false when the read is not possible.
+static bool TryRead(void* address, void* output, size_t size)
+{
+    __try {
+        memcpy(output, address, size);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// Log-only vectored handler: records the first structured exception with
+// registers, a bounded EBP walk and raw stack words, then lets the game
+// handle it normally. No state is modified.
+static volatile LONG g_crashLogged = 0;
+static LONG WINAPI CrashObserver(EXCEPTION_POINTERS* info)
+{
+    if (!info || !info->ExceptionRecord) return EXCEPTION_CONTINUE_SEARCH;
+    if (InterlockedExchange(&g_crashLogged, 1) != 0) return EXCEPTION_CONTINUE_SEARCH;
+    const EXCEPTION_RECORD* record = info->ExceptionRecord;
+    LogA("CRASH code=%08lX addr=%p flags=%08lX extra=%p",
+         record->ExceptionCode, record->ExceptionAddress,
+         record->ExceptionFlags, (void*)record->ExceptionInformation[1]);
+    LogAddress("CRASH module", record->ExceptionAddress);
+
+    CONTEXT* context = info->ContextRecord;
+    if (context) {
+        LogA("CTX eax=%08lX ecx=%08lX edx=%08lX ebx=%08lX", context->Eax,
+             context->Ecx, context->Edx, context->Ebx);
+        LogA("CTX esp=%08lX ebp=%08lX esi=%08lX edi=%08lX eip=%08lX", context->Esp,
+             context->Ebp, context->Esi, context->Edi, context->Eip);
+
+        // Raw stack window: return addresses often sit near ESP.
+        unsigned long* stack = reinterpret_cast<unsigned long*>(context->Esp);
+        for (int i = 0; i < 16; ++i) {
+            unsigned long value = 0;
+            if (!TryRead(stack + i, &value, sizeof(value))) break;
+            if (value) LogAddress("STACK", reinterpret_cast<const void*>(value));
+        }
+
+        // Frame-pointer walk: [ebp] = previous ebp, [ebp+4] = return address.
+        unsigned long frame = context->Ebp;
+        for (int depth = 0; depth < 12 && frame; ++depth) {
+            unsigned long next = 0;
+            if (!TryRead(reinterpret_cast<void*>(frame), &next, sizeof(next))) break;
+            unsigned long ret = 0;
+            TryRead(reinterpret_cast<void*>(frame + 4), &ret, sizeof(ret));
+            if (ret) LogAddress("FRAME", reinterpret_cast<const void*>(ret));
+            if (next <= frame) break;
+            frame = next;
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 static FARPROC ResolveExport(HMODULE mod, const char* name, WORD ordinal)
 {
     FARPROC p = GetProcAddress(mod, name);
@@ -84,6 +160,7 @@ static void DoInit(void)
     swprintf_s(g_szMods, MAX_PATH, L"%smods\\*.dll", exe);
 
     LogA("=== rs_loader init ===");
+    AddVectoredExceptionHandler(1, CrashObserver);
     LogA("exe dir: %ls", exe);
 
     // --- original RS.dll ---------------------------------------------------

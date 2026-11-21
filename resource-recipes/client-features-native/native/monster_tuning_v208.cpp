@@ -3,14 +3,52 @@
 #include "monster_tuning.h"
 #include "v208_dungeon_monster.h"
 
+// Diagnostic logging is compiled only into the DLL plugin build (which has a
+// CRT). The static payload build defines MONSTER_TUNING_NO_CRT and stays clean.
+#ifndef MONSTER_TUNING_NO_CRT
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <stdio.h>
+#include <cstdarg>
+#include <cwchar>
+#endif
+
 // The additive payload uses no CRT. MSVC emits this marker for binary64 data.
 #ifdef MONSTER_TUNING_NO_CRT
 extern "C" { int _fltused = 0; }
 #endif
 
+// Runtime plugin hook target. The static packager patches the registration
+// immediate in the EXE before launch; a DLL loaded after startup must instead
+// redirect the original callback entry itself and tail-call a trampoline that
+// replays the original prologue.
+extern "C" void* g_pOriginalStartMap = nullptr;
+
 namespace {
 
 monster_tuning::RoomRules roomRules;
+
+#ifndef MONSTER_TUNING_NO_CRT
+void DiagLog(const char* fmt, ...) {
+    wchar_t exe[MAX_PATH];
+    DWORD n = GetModuleFileNameW(NULL, exe, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return;
+    wchar_t* slash = wcsrchr(exe, L'\\');
+    if (slash) slash[1] = 0;
+    else exe[0] = 0;
+    wchar_t path[MAX_PATH];
+    swprintf_s(path, MAX_PATH, L"%smonster_ai.log", exe);
+    FILE* f = NULL;
+    if (_wfopen_s(&f, path, L"a") == 0 && f) {
+        va_list args;
+        va_start(args, fmt);
+        vfprintf(f, fmt, args);
+        va_end(args);
+        fputc('\n', f);
+        fclose(f);
+    }
+}
+#endif
 
 std::int64_t TruncateToInt64(double scaled) noexcept {
     // The payload links without the MSVC runtime. Preserve the client's x87
@@ -62,7 +100,22 @@ void ScaleMonsterScalar(std::uint8_t* field, double rate) noexcept {
 
 extern "C" __declspec(noinline) void __cdecl PrepareMonsterTuningStartMap() noexcept {
     const auto packet = v208::ActivePacketReader();
+#ifndef MONSTER_TUNING_NO_CRT
+    static unsigned long startMapCalls = 0;
+    ++startMapCalls;
+    const bool hasMat1 = packet.cursor && packet.remaining >= 24 &&
+        std::memcmp(packet.cursor + packet.remaining - 4, "MAT1", 4) == 0;
+    DiagLog("START_MAP #%lu: remaining=%d cursor=%p MAT1=%s",
+            startMapCalls, packet.remaining, (const void*)packet.cursor,
+            hasMat1 ? "yes" : "no");
+#endif
     monster_tuning::PrepareStartMap(roomRules, packet.cursor, packet.remaining);
+#ifndef MONSTER_TUNING_NO_CRT
+    const auto probe = roomRules.ForLevel(1);
+    DiagLog("START_MAP #%lu: active=%s hp=%g def=%g atk=%g remainAfter=%d",
+            startMapCalls, probe.hp != 1.0 ? "yes" : "no",
+            probe.hp, probe.defense, probe.attack, packet.remaining);
+#endif
 }
 
 extern "C" __declspec(dllexport) void __cdecl
@@ -91,13 +144,21 @@ extern "C" __declspec(dllexport) __declspec(naked) void MonsterTuningStartMapV20
         call PrepareMonsterTuningStartMap
         popad
         popfd
-        push 01ff8d80h
+        push dword ptr [g_pOriginalStartMap]
         ret
     }
 }
 
 extern "C" __declspec(noinline) void __cdecl ApplyMonsterSpawnTuning(void* actor) noexcept {
     const v208::MonsterView monster(actor);
+#ifndef MONSTER_TUNING_NO_CRT
+    static unsigned long spawnCalls = 0;
+    const bool supported = monster.HasSupportedLayout();
+    if (++spawnCalls <= 12) {
+        DiagLog("SPAWN #%lu: actor=%p layout=%s", spawnCalls, actor,
+                supported ? "ok" : "REJECT");
+    }
+#endif
     if (!monster.HasSupportedLayout()) {
         return;
     }
@@ -106,6 +167,12 @@ extern "C" __declspec(noinline) void __cdecl ApplyMonsterSpawnTuning(void* actor
         return;
     }
     const auto rates = roomRules.ForLevel(static_cast<std::uint8_t>(level));
+#ifndef MONSTER_TUNING_NO_CRT
+    if (spawnCalls <= 12) {
+        DiagLog("SPAWN #%lu: level=%d hp=%g def=%g atk=%g move=%g",
+                spawnCalls, level, rates.hp, rates.defense, rates.attack, rates.moveSpeed);
+    }
+#endif
     using v208::MonsterScalar;
     for (unsigned block = 0; block < v208::MonsterView::AttributeBlockCount; ++block) {
         ScaleMonsterHealthField(monster.MaximumHealth(block), rates.hp);
