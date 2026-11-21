@@ -128,7 +128,20 @@ func (a *Archive) RepackScriptAdditions(additions []ScriptAddition) ([]byte, err
 	}
 	items := append([]fileItem(nil), a.items...)
 	seen := make(map[string]bool)
-	newChunk := []byte{}
+	// 网关 GM 索引历史上限制单个 chunk 解压后不超过 64 MiB；这里按 4 MiB 切分，
+	// 既避免超限，也让运行期按路径读取时的内存峰值和解压粒度更小。
+	const maxNewChunkOriginal = 4 << 20
+	chunks := [][]byte{{}}
+	place := func(raw []byte) (int, int) {
+		last := len(chunks) - 1
+		if len(chunks[last]) > 0 && len(chunks[last])+len(raw) > maxNewChunkOriginal {
+			chunks = append(chunks, nil)
+			last++
+		}
+		offset := len(chunks[last])
+		chunks[last] = append(chunks[last], raw...)
+		return len(a.groups) + last, offset
+	}
 	for _, addition := range additions {
 		target := strings.ReplaceAll(strings.Trim(addition.Path, "/"), "\\", "/")
 		existing := a.FindFileIndex(target)
@@ -206,7 +219,8 @@ func (a *Archive) RepackScriptAdditions(additions []ScriptAddition) ([]byte, err
 			// the basename. Match PvfArchive.SplitArchivePath: no trailing slash.
 			dir, name = target[:split], target[split+1:]
 		}
-		item := fileItem{nameOffset: intern(name), pathOffset: intern(dir), chunkIndex: len(a.groups), dataOffset: len(newChunk), dataSize: len(raw), dataType: 1}
+		chunkIndex, dataOffset := place(raw)
+		item := fileItem{nameOffset: intern(name), pathOffset: intern(dir), chunkIndex: chunkIndex, dataOffset: dataOffset, dataSize: len(raw), dataType: 1}
 		if addition.AppendToExisting {
 			item.nameOffset = items[existing].nameOffset
 			item.pathOffset = items[existing].pathOffset
@@ -214,7 +228,6 @@ func (a *Archive) RepackScriptAdditions(additions []ScriptAddition) ([]byte, err
 		} else {
 			items = append(items, item)
 		}
-		newChunk = append(newChunk, raw...)
 	}
 	nameSection, err := a.encodeProtectedNameSection(layout, shadow.strA, shadow.strW)
 	if err != nil {
@@ -254,14 +267,19 @@ func (a *Archive) RepackScriptAdditions(additions []ScriptAddition) ([]byte, err
 		pos += 4
 	}
 	decryptProtected("hash", hash)
-	encrypted, err := a.encryptChunk(newChunk)
-	if err != nil {
-		return nil, err
-	}
 	body := append([]byte(nil), a.data[layout.bodyOffset:layout.bodyOffset+layout.bodySize]...)
-	body = append(body, encrypted...)
 	groups := append([]groupItem(nil), a.groups...)
-	groups = append(groups, groupItem{compressedSize: len(body), originalSize: len(newChunk)})
+	for _, chunk := range chunks {
+		if len(chunk) == 0 {
+			continue
+		}
+		encrypted, err := a.encryptChunk(chunk)
+		if err != nil {
+			return nil, err
+		}
+		body = append(body, encrypted...)
+		groups = append(groups, groupItem{compressedSize: len(body), originalSize: len(chunk)})
+	}
 	header := a.header
 	header.fileCount = len(items)
 	header.groupCount = len(groups)
