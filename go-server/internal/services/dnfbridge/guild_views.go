@@ -68,6 +68,10 @@ func (s *Service) writeCurrentGuildManagementState(session *gameSession, g *dnfg
 }
 
 func (s *Service) writeCurrentGuildManagementProjection(session *gameSession, g *dnfguild.Guild, notifyMembership bool) error {
+	return s.writeCurrentGuildManagementProjectionWithOnline(session, g, len(s.currentGuildOnlineChannels(g, session)), s.gameplayNow(), notifyMembership)
+}
+
+func (s *Service) writeCurrentGuildManagementProjectionWithOnline(session *gameSession, g *dnfguild.Guild, onlineCount int, sampledAt time.Time, notifyMembership bool) error {
 	if session.channelExitAcknowledged {
 		return nil
 	}
@@ -80,7 +84,7 @@ func (s *Service) writeCurrentGuildManagementProjection(session *gameSession, g 
 		}
 	}
 	if g != nil {
-		if err := s.sendGameUpperRawClass(session, 70, buildCurrentGuildManagementBody(g, len(s.currentGuildOnlineChannels(g, session)), s.gameplayNow(), grade), 0); err != nil {
+		if err := s.sendGameUpperRawClass(session, 70, buildCurrentGuildManagementBody(g, onlineCount, sampledAt, grade), 0); err != nil {
 			return err
 		}
 	}
@@ -109,6 +113,10 @@ func (s *Service) sendCurrentGuildManagementState(session *gameSession, g *dnfgu
 // A roster query also runs when opening the hongbao tab. Keep its model and
 // buff refresh, without replaying login/membership-change notifications.
 func (s *Service) sendCurrentGuildManagementProjection(session *gameSession, g *dnfguild.Guild, notifyMembership bool) error {
+	return s.sendCurrentGuildManagementProjectionWithOnline(session, g, len(s.currentGuildOnlineChannels(g, session)), s.gameplayNow(), notifyMembership)
+}
+
+func (s *Service) sendCurrentGuildManagementProjectionWithOnline(session *gameSession, g *dnfguild.Guild, onlineCount int, sampledAt time.Time, notifyMembership bool) error {
 	if session == nil || !session.townMu.TryLock() {
 		return nil
 	}
@@ -116,7 +124,7 @@ func (s *Service) sendCurrentGuildManagementProjection(session *gameSession, g *
 	if session.townSceneReadyCharacterID != session.selectedCharacterID || session.selectedCharacterID == 0 {
 		return nil
 	}
-	return s.writeCurrentGuildManagementProjection(session, g, notifyMembership)
+	return s.writeCurrentGuildManagementProjectionWithOnline(session, g, onlineCount, sampledAt, notifyMembership)
 }
 
 func (s *Service) refreshCurrentGuildMembership(ctx context.Context, session *gameSession, g *dnfguild.Guild) error {
@@ -162,6 +170,10 @@ func (s *Service) guildAccountProjection(ctx context.Context, session *gameSessi
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	return s.guildAccountProjectionWithDirectory(ctx, session, repos, r)
+}
+
+func (s *Service) guildAccountProjectionWithDirectory(ctx context.Context, session *gameSession, repos dnfrepo.Group, r *dnfguild.DirectoryReadView) ([]currentGuildCharacterProjection, []currentGuildCharacterProjection, []*dnfguild.Guild, error) {
 	characters, err := repos.Character.ListByAccount(ctx, s.accountIDForSession(session), dnfrepo.DefaultCharacterSlotLimit)
 	if err != nil {
 		return nil, nil, nil, err
@@ -252,7 +264,11 @@ func (s *Service) currentGuildOwnedSelectedIdentity(session *gameSession) (dnfre
 	return character, nil
 }
 
-func (s *Service) handleCurrentGuildMemberListObserved(session *gameSession, opcode uint16, source string) (result error) {
+func (s *Service) handleCurrentGuildMemberListObserved(session *gameSession, opcode uint16, source string) error {
+	return s.handleCurrentGuildMemberListObservedShared(session, opcode, source, nil)
+}
+
+func (s *Service) handleCurrentGuildMemberListObservedShared(session *gameSession, opcode uint16, source string, shared *guildPresenceReadCache) (result error) {
 	started := s.performanceStart()
 	var readTime, buildTime, writeTime time.Duration
 	defer func() {
@@ -280,7 +296,7 @@ func (s *Service) handleCurrentGuildMemberListObserved(session *gameSession, opc
 		return s.sendGameUpperFailure(session, opcode, currentGuildGenericError)
 	}
 	readStart := s.performanceStart()
-	g, err := s.readCurrentGuildDisplay(ctx, bound, false, full)
+	g, err := s.readCurrentGuildDisplayShared(ctx, bound, false, full, shared)
 	if !readStart.IsZero() {
 		readTime = time.Since(readStart)
 	}
@@ -290,21 +306,25 @@ func (s *Service) handleCurrentGuildMemberListObserved(session *gameSession, opc
 	if err != nil {
 		return s.sendGameUpperFailure(session, opcode, currentGuildGenericError)
 	}
-	return s.sendCurrentGuildRosterDisplay(ctx, bound, g, opcode, full, cursor, source, false, &buildTime, &writeTime)
+	return s.sendCurrentGuildRosterDisplayShared(ctx, bound, g, opcode, full, cursor, source, false, shared, &buildTime, &writeTime)
 }
 
 // g is an immutable display snapshot. Only recipient session state is updated.
 func (s *Service) sendCurrentGuildRosterDisplay(ctx context.Context, bound boundGameSessionCharacter, g *dnfguild.Guild, opcode uint16, full, cursor bool, source string, notifyMembership bool, buildTime, writeTime *time.Duration) error {
+	return s.sendCurrentGuildRosterDisplayShared(ctx, bound, g, opcode, full, cursor, source, notifyMembership, nil, buildTime, writeTime)
+}
+
+func (s *Service) sendCurrentGuildRosterDisplayShared(ctx context.Context, bound boundGameSessionCharacter, g *dnfguild.Guild, opcode uint16, full, cursor bool, source string, notifyMembership bool, shared *guildPresenceReadCache, buildTime, writeTime *time.Duration) error {
 	session := bound.session
+	online, sampledAt := shared.sharedOnlineChannels(s, g)
 	if full || notifyMembership {
 		if primeErr := s.primeCurrentWeddingGuildRosterForBound(ctx, bound, g); primeErr != nil {
 			s.logGameEvent(session, "game-wedding-guild-roster-prime-deferred", "error", primeErr)
 		}
-		if err := s.sendCurrentGuildManagementProjection(session, g, notifyMembership); err != nil {
+		if err := s.sendCurrentGuildManagementProjectionWithOnline(session, g, len(online), sampledAt, notifyMembership); err != nil {
 			return err
 		}
 	}
-	online := s.currentGuildOnlineChannels(g, session)
 	members := 0
 	if g != nil {
 		members = len(g.Members)
@@ -315,12 +335,12 @@ func (s *Service) sendCurrentGuildRosterDisplay(ctx context.Context, bound bound
 			"members", members, "online", len(online), "full", full, "cursor", cursor)
 	}
 	buildStart := s.performanceStart()
-	body := buildCurrentGuildMemberListBody(g, full, cursor, online, s.gameplayNow(), byte(s.channelAdvertiseID()))
+	chunks := shared.sharedRosterChunks(s, g, opcode, full, cursor, online, sampledAt, byte(s.channelAdvertiseID()))
 	s.performanceEnd(perfGuildProjectionBuild, buildStart, nil)
 	if !buildStart.IsZero() {
 		*buildTime = time.Since(buildStart)
 	}
-	// EXIT and this final roster frame share the scene fence, just like NOTI127.
+	// EXIT and these roster frames share the scene fence, just like NOTI127.
 	if source == "client" {
 		session.townMu.Lock()
 	} else if !session.townMu.TryLock() {
@@ -331,7 +351,12 @@ func (s *Service) sendCurrentGuildRosterDisplay(ctx context.Context, bound bound
 		return nil
 	}
 	writeStart := s.performanceStart()
-	err := s.sendGameUpperSuccess(session, opcode, body)
+	var err error
+	for _, chunk := range chunks {
+		if err = s.sendGameUpperSuccess(session, chunk.opcode, chunk.body); err != nil {
+			break
+		}
+	}
 	s.performanceEnd(perfGuildRosterWrite, writeStart, err)
 	if !writeStart.IsZero() {
 		*writeTime = time.Since(writeStart)
@@ -343,6 +368,7 @@ func (s *Service) broadcastCurrentGuildMembers(g *dnfguild.Guild, skip uint16) {
 	if g == nil {
 		return
 	}
+	shared := &guildPresenceReadCache{}
 	for id, m := range g.Members {
 		key := uint16(currentGuildNumericID(id))
 		if key == skip {
@@ -355,10 +381,17 @@ func (s *Service) broadcastCurrentGuildMembers(g *dnfguild.Guild, skip uint16) {
 		peer.session.guild.mu.Lock()
 		requested := peer.session.guild.memberListRequested
 		peer.session.guild.mu.Unlock()
-		if requested {
-			if err := s.handleCurrentGuildMemberListObserved(peer.session, uint16(dnfenum.CmdPacketGuildAllMemberList), "membership"); err != nil {
-				s.logGameEvent(peer.session, "game-guild-member-refresh-failed", "error", err)
-			}
+		if !requested {
+			continue
+		}
+		// 优先投递到接收方自己的事件循环并复用共享读缓存，避免慢连接阻塞发起方事件循环；
+		// 通过独立 membership 令牌保留队列满重试恢复、membership 来源与非合并/不因副本跳过语义。
+		if peer.session.events != nil && peer.session.events.loop != nil {
+			s.requestCurrentGuildMembershipRefresh(peer, shared)
+			continue
+		}
+		if err := s.handleCurrentGuildMemberListObservedShared(peer.session, uint16(dnfenum.CmdPacketGuildAllMemberList), "membership", shared); err != nil {
+			s.logGameEvent(peer.session, "game-guild-member-refresh-failed", "error", err)
 		}
 	}
 }
@@ -384,12 +417,12 @@ func (s *Service) handleCurrentGuildSearch(session *gameSession, body []byte) er
 func (s *Service) handleCurrentGuildRecommend(session *gameSession, _ []byte) error {
 	ctx, cancel := s.currentGuildContext()
 	defer cancel()
-	_, r, err := s.readCurrentGuildDirectory(ctx)
+	repos, r, err := s.readCurrentGuildDirectory(ctx)
 	if err != nil {
 		return err
 	}
 	rows := r.SearchRosters("", 0, currentGuildPageSize)
-	members, _, own, err := s.guildAccountProjection(ctx, session)
+	members, _, own, err := s.guildAccountProjectionWithDirectory(ctx, session, repos, r)
 	if err != nil {
 		return err
 	}
@@ -453,5 +486,10 @@ func (s *Service) handleCurrentGuildGrades(session *gameSession, op uint16) erro
 	if err != nil {
 		return err
 	}
-	return s.sendGameUpperSuccess(session, op, buildCurrentGuildGradeBody(g, op == currentGuildGradesOpcode))
+	for _, chunk := range buildCurrentGuildGradeChunks(g, op) {
+		if err := s.sendGameUpperSuccess(session, chunk.opcode, chunk.body); err != nil {
+			return err
+		}
+	}
+	return nil
 }

@@ -38,7 +38,7 @@ func (b Benefit) valid() bool {
 	case 7:
 		return b.ExpiresAt.IsZero()
 	case 21:
-		return (b.Value == 300 || b.Value == 500 || b.Value == 700 || b.Value == 1000) && !b.ExpiresAt.IsZero() && b.ExpiresAt.Unix() > 0 && b.ExpiresAt.Unix() <= math.MaxInt32
+		return (b.Value == 300 || b.Value == 500 || b.Value == 700 || b.Value == 1000 || b.Value == 5000) && !b.ExpiresAt.IsZero() && b.ExpiresAt.Unix() > 0 && b.ExpiresAt.Unix() <= math.MaxInt32
 	}
 	return false
 }
@@ -115,6 +115,11 @@ func PurchaseBenefit(ctx context.Context, uow r.GuildUnitOfWork, query CargoPurc
 		_, expansion := reg.MemberExpansions[query.RequestID]
 		_, claim := reg.ContractClaims[query.RequestID]
 		if cargo || expansion || claim {
+			return ErrPurchaseIdentity
+		}
+		if _, archived, err := LoadArchivedReceipt(ctx, tx.Settings, query.RequestID); err != nil {
+			return err
+		} else if archived {
 			return ErrPurchaseIdentity
 		}
 		if old, found := reg.BenefitPurchases[query.RequestID]; found {
